@@ -1,0 +1,24 @@
+[Unit]
+Description=nerd-dictation-ex daemon - Speech-to-text with persistent model
+Documentation=https://github.com/marcusmae/nerd-dictation-ex
+After=graphical-session.target
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/nerd-dictation-ex daemon start --foreground
+ExecStop=%h/.local/bin/nerd-dictation-ex daemon stop
+Restart=on-failure
+RestartSec=5
+
+# Окружение
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+# Безопасность
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/vosk %h/.cache %t
+
+[Install]
+WantedBy=default.target

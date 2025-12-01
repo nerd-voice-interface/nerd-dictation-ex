@@ -4,10 +4,12 @@
 
 ## Возможности
 
+- **Daemon с моделью в памяти**: Мгновенный отклик, модель загружается один раз
 - **Подключаемые бэкенды**: Устанавливаются отдельно как Python-пакеты
 - **Автоустановка моделей**: Скрипты для скачивания моделей
 - **Переключение через конфиг**: TOML-файл для настройки
 - **Wayland/X11/TTY**: Работает везде через ydotool/dotool
+- **Systemd интеграция**: Автозапуск daemon при логине
 - **Оптимизирован для русского языка**
 
 ## Архитектура
@@ -97,21 +99,40 @@ device = "cuda"         # или "cpu"
 
 ## Использование
 
+### Рекомендуемый workflow (daemon)
+
 ```bash
-# Показать установленные бэкенды
-nerd-dictation-ex list-backends
+# 1. Запустить daemon (модель загружается в память)
+nerd-dictation-ex daemon start
 
-# Начать диктовку (в фоне)
-nerd-dictation-ex begin &
+# 2. Диктовка (мгновенный отклик!)
+nerd-dictation-ex begin    # Начать
+nerd-dictation-ex end      # Завершить
+nerd-dictation-ex cancel   # Отменить
 
-# Остановить и вывести текст
+# 3. Управление daemon
+nerd-dictation-ex daemon status              # Статус
+nerd-dictation-ex daemon reload -b gigaam    # Сменить бэкенд
+nerd-dictation-ex daemon stop                # Остановить
+```
+
+### Без daemon (медленный старт)
+
+```bash
+# Модель загружается каждый раз (~3-10 сек)
+nerd-dictation-ex begin --no-daemon &
 nerd-dictation-ex end
+```
 
-# Отменить без вывода
-nerd-dictation-ex cancel
+### Systemd (автозапуск)
 
-# Переопределить бэкенд
-nerd-dictation-ex begin --backend gigaam &
+```bash
+# Установить и включить
+cp systemd/nerd-dictation-ex.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now nerd-dictation-ex
+
+# Теперь daemon запускается при логине
 ```
 
 ### Привязка к клавишам
