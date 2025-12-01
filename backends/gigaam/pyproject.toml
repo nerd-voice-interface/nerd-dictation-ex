@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nerd-dictation-gigaam"
+version = "0.1.0"
+description = "GigaAM бэкенд для nerd-dictation-ex (GPU, высокое качество для русского)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0"}
+keywords = ["speech-to-text", "gigaam", "asr", "russian", "nerd-dictation", "sber"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+dependencies = [
+    "nerd-dictation-ex>=0.1.0",
+    "torch>=2.0",
+    "torchaudio>=2.0",
+    "omegaconf>=2.3",
+    "soundfile>=0.12",
+    "librosa>=0.10",
+]
+
+[project.optional-dependencies]
+# GigaAM устанавливается из GitHub
+gigaam = ["gigaam"]
+
+[project.scripts]
+nerd-dictation-gigaam-setup = "nerd_dictation_gigaam.setup:main"
+
+[project.entry-points."nerd_dictation_ex.backends"]
+gigaam = "nerd_dictation_gigaam:GigaAMBackend"
+
+[project.urls]
+Homepage = "https://github.com/marcusmae/nerd-dictation-ex"
+"GigaAM" = "https://github.com/salute-developers/GigaAM"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"nerd_dictation_gigaam" = ["*.md"]

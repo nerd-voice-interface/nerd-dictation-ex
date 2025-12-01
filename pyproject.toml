@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nerd-dictation-ex"
+version = "0.1.0"
+description = "Расширенная диктовка для Linux с подключаемыми бэкендами ASR"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0"}
+authors = [
+    {name = "marcusmae"}
+]
+keywords = ["speech-to-text", "dictation", "asr", "russian", "linux"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+dependencies = [
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+# Бэкенды устанавливаются отдельно
+vosk = ["nerd-dictation-vosk"]
+gigaam = ["nerd-dictation-gigaam"]
+all = [
+    "nerd-dictation-vosk",
+    "nerd-dictation-gigaam",
+]
+
+[project.scripts]
+nerd-dictation-ex = "nerd_dictation_ex.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/marcusmae/nerd-dictation-ex"
+Repository = "https://github.com/marcusmae/nerd-dictation-ex"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"nerd_dictation_ex" = ["*.toml"]

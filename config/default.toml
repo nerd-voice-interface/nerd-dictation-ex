@@ -1,0 +1,52 @@
+# nerd-dictation-ex конфигурация
+# Скопируйте в ~/.config/nerd-dictation-ex/config.toml
+
+[general]
+# Активный бэкенд: "vosk" или "gigaam"
+backend = "vosk"
+
+# Метод симуляции ввода: xdotool, ydotool, dotool, wtype, stdout
+input_method = "ydotool"
+
+# Язык (для будущих расширений)
+language = "ru"
+
+[audio]
+# Источник аудио: parec (PulseAudio), pw-cat (PipeWire), sox
+source = "pw-cat"
+
+# Частота дискретизации
+sample_rate = 16000
+
+# Размер чанка в байтах
+chunk_size = 8000
+
+[vosk]
+# Путь к модели Vosk
+# Скачайте с https://alphacephei.com/vosk/models
+model_path = "~/.local/share/vosk/vosk-model-ru"
+
+# Альтернативные модели:
+# model_path = "~/.local/share/vosk/vosk-model-small-ru"  # Маленькая (~45MB)
+# model_path = "~/.local/share/vosk/vosk-model-ru"        # Большая (~1.5GB)
+
+[gigaam]
+# Модель GigaAM:
+# - v3_ctc        : быстрая CTC
+# - v3_rnnt       : точная RNNT
+# - v3_e2e_ctc    : end-to-end с пунктуацией
+# - v3_e2e_rnnt   : лучшее качество с пунктуацией
+model_name = "v3_ctc"
+
+# Устройство: cuda или cpu
+device = "cuda"
+
+[output]
+# Добавлять пробел после каждой фразы
+trailing_space = true
+
+# Капитализация первой буквы предложения
+capitalize = true
+
+# Таймаут тишины для авто-остановки (секунды, 0 = отключено)
+silence_timeout = 0
