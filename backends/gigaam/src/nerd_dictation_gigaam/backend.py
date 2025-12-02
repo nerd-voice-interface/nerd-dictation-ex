@@ -87,7 +87,7 @@ class GigaAMBackend(ASRBackend):
                     if "no kernel image" in str(e) or "CUDA" in str(e):
                         print(f"[gigaam] CUDA недоступна для этого GPU: {e}", file=sys.stderr)
                         print("[gigaam] Переключаюсь на CPU", file=sys.stderr)
-                        self._model = self._model.cpu()
+                        self._model = self._model.cpu().float()
                         self._device = "cpu"
                     else:
                         raise

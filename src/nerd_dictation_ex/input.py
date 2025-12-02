@@ -42,7 +42,7 @@ def type_text(text: str, config: dict) -> None:
 
     cmd = INPUT_COMMANDS[method]
 
-    if "dotool" in cmd[0]:
+    if cmd[0] == "dotool":
         # dotool принимает команды через stdin
         print(f"[input] выполняю: {cmd} (stdin)", file=sys.stderr)
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
