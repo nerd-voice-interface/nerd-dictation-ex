@@ -4,6 +4,7 @@ https://alphacephei.com/vosk/
 """
 
 import json
+import sys
 from typing import Generator, Optional
 
 from nerd_dictation_ex.backends.base import ASRBackend, ASRResult
@@ -46,28 +47,35 @@ class VoskBackend(ASRBackend):
         sample_rate: int = 16000,
     ) -> Generator[ASRResult, None, None]:
         """Потоковое распознавание через Vosk."""
+        print("[vosk] transcribe_stream: начало", file=sys.stderr)
         if self._recognizer is None:
             raise RuntimeError("Модель не загружена. Вызовите load_model() сначала.")
 
+        chunk_count = 0
         for chunk in audio_stream:
+            chunk_count += 1
             if self._recognizer.AcceptWaveform(chunk):
                 result = json.loads(self._recognizer.Result())
                 text = result.get("text", "")
                 if text:
+                    print(f"[vosk] распознано: '{text}'", file=sys.stderr)
                     yield ASRResult(text=text, is_final=True)
             else:
                 partial = json.loads(self._recognizer.PartialResult())
                 text = partial.get("partial", "")
                 if text:
                     yield ASRResult(text=text, is_final=False)
+        print(f"[vosk] transcribe_stream: конец, обработано {chunk_count} чанков", file=sys.stderr)
 
     def finalize(self) -> Optional[ASRResult]:
         """Получить финальный результат."""
+        print("[vosk] finalize", file=sys.stderr)
         if self._recognizer is None:
             return None
         result = json.loads(self._recognizer.FinalResult())
         text = result.get("text", "")
         if text:
+            print(f"[vosk] финал: '{text}'", file=sys.stderr)
             return ASRResult(text=text, is_final=True)
         return None
 

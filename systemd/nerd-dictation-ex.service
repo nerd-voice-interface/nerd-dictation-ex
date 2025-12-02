@@ -6,19 +6,13 @@ Wants=pipewire.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/nerd-dictation-ex daemon start --foreground
-ExecStop=%h/.local/bin/nerd-dictation-ex daemon stop
+ExecStart=%h/forge/nerd-dictation-ex/.venv/bin/nerd-dictation-ex daemon run
 Restart=on-failure
 RestartSec=5
 
 # Окружение
 Environment=XDG_RUNTIME_DIR=/run/user/%U
-
-# Безопасность
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/share/vosk %h/.cache %t
+Environment=DISPLAY=:0
 
 [Install]
 WantedBy=default.target

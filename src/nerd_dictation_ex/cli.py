@@ -115,18 +115,36 @@ def cmd_cancel(args, config: dict) -> None:
         _cmd_cancel_direct(args, config)
 
 
+def cmd_toggle(args, config: dict) -> None:
+    """Переключить диктовку (begin/end)."""
+    from .daemon import DaemonClient
+
+    if DaemonClient.is_running():
+        # Проверяем статус
+        status = DaemonClient.send_command({"action": "status"})
+        if status.get("state") == "listening":
+            cmd_end(args, config)
+        else:
+            cmd_begin(args, config)
+    else:
+        # Без daemon — проверяем cookie
+        if COOKIE_PATH.exists():
+            _cmd_end_direct(args, config)
+        else:
+            _cmd_begin_direct(args, config)
+
+
 # ============================================================================
 # Команды daemon
 # ============================================================================
 
 def cmd_daemon(args, config: dict) -> None:
     """Управление daemon'ом."""
-    from .daemon import start_daemon, stop_daemon, daemon_status, DaemonClient
+    from .daemon import run_daemon, daemon_status, DaemonClient
 
-    if args.daemon_command == "start":
-        start_daemon(config, foreground=args.foreground)
-    elif args.daemon_command == "stop":
-        stop_daemon()
+    if args.daemon_command == "run":
+        # Запуск daemon (для systemd)
+        run_daemon(config)
     elif args.daemon_command == "status":
         daemon_status()
     elif args.daemon_command == "reload":
@@ -342,18 +360,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры:
-  # Рекомендуемый workflow (модель в памяти):
-  nerd-dictation-ex daemon start         # Запустить daemon (один раз)
-  nerd-dictation-ex begin                # Начать диктовку (мгновенно)
-  nerd-dictation-ex end                  # Завершить диктовку
+  # Запуск через systemd (рекомендуется):
+  systemctl --user start nerd-dictation-ex   # Запустить daemon
+  nerd-dictation-ex toggle                   # Переключить диктовку
+  nerd-dictation-ex daemon status            # Проверить статус
 
   # Управление daemon:
-  nerd-dictation-ex daemon status        # Проверить статус
   nerd-dictation-ex daemon reload -b gigaam  # Сменить бэкенд
-  nerd-dictation-ex daemon stop          # Остановить daemon
+  systemctl --user stop nerd-dictation-ex    # Остановить daemon
 
   # Без daemon (медленный старт):
-  nerd-dictation-ex begin --no-daemon    # Загружать модель каждый раз
+  nerd-dictation-ex begin --no-daemon        # Загружать модель каждый раз
         """
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -362,11 +379,7 @@ def main():
     daemon_parser = subparsers.add_parser("daemon", help="Управление фоновым сервисом")
     daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", required=True)
 
-    daemon_start = daemon_subparsers.add_parser("start", help="Запустить daemon")
-    daemon_start.add_argument("--foreground", "-f", action="store_true",
-                              help="Запустить в текущем терминале (для отладки)")
-
-    daemon_subparsers.add_parser("stop", help="Остановить daemon")
+    daemon_subparsers.add_parser("run", help="Запустить daemon (для systemd)")
     daemon_subparsers.add_parser("status", help="Показать статус daemon")
 
     daemon_reload = daemon_subparsers.add_parser("reload", help="Перезагрузить бэкенд")
@@ -383,6 +396,9 @@ def main():
 
     # cancel
     subparsers.add_parser("cancel", help="Отменить диктовку")
+
+    # toggle
+    subparsers.add_parser("toggle", help="Переключить диктовку (begin/end)")
 
     # list-backends
     subparsers.add_parser("list-backends", help="Показать доступные бэкенды")
@@ -401,6 +417,8 @@ def main():
         cmd_end(args, config)
     elif args.command == "cancel":
         cmd_cancel(args, config)
+    elif args.command == "toggle":
+        cmd_toggle(args, config)
     elif args.command == "list-backends":
         cmd_list_backends(args, config)
 

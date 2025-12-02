@@ -5,11 +5,8 @@ nerd-dictation-ex daemon — фоновый сервис с моделью в п
 Держит ASR модель загруженной для мгновенного отклика.
 Общение через Unix socket.
 
-Использование:
-    nerd-dictation-ex daemon start    # Запустить daemon
-    nerd-dictation-ex daemon stop     # Остановить daemon
-    nerd-dictation-ex daemon status   # Проверить статус
-    nerd-dictation-ex begin           # Клиент отправляет команду daemon'у
+Запуск через systemd:
+    systemctl --user start nerd-dictation-ex
 """
 
 import fcntl
@@ -132,31 +129,37 @@ class DictationDaemon:
 
     def _type_text(self, text: str) -> None:
         """Ввести текст через выбранный метод."""
+        print(f"[daemon] _type_text вызван с: '{text}'", file=sys.stderr)
         if not text:
+            print("[daemon] _type_text: пустой текст, пропуск", file=sys.stderr)
             return
 
         output_config = self.config.get("output", {})
         if output_config.get("trailing_space", True):
             text = text + " "
 
-        method = self.config.get("general", {}).get("input_method", "ydotool")
+        method = self.config.get("general", {}).get("input_method", "xdotool")
+        print(f"[daemon] _type_text: метод={method}, текст='{text}'", file=sys.stderr)
 
         commands = {
             "ydotool": ["ydotool", "type", "--"],
             "dotool": ["dotool"],
             "xdotool": ["xdotool", "type", "--"],
-            "wtype": ["wtype", "--"],
+            "wtype": ["wtype"],
         }
 
         if method == "stdout":
             print(text, end="", flush=True)
         elif method in commands:
+            import shlex
             cmd = commands[method]
-            if "dotool" in cmd[0]:
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-                proc.communicate(f"type {text}".encode())
+            shell_cmd = f'{" ".join(cmd)} {shlex.quote(text)}'
+            print(f"[daemon] выполняю: {shell_cmd}", file=sys.stderr)
+            result = subprocess.run(shell_cmd, shell=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"[daemon] ошибка: {result.stderr}", file=sys.stderr)
             else:
-                subprocess.run(cmd + [text], check=False)
+                print(f"[daemon] успех", file=sys.stderr)
 
     def _dictation_loop(self) -> None:
         """Основной цикл диктовки (в отдельном потоке)."""
@@ -172,11 +175,11 @@ class DictationDaemon:
                 if result.is_final and result.text:
                     self._type_text(result.text)
 
-            # Финализация
-            if not self._stop_dictation.is_set():
-                final = self.backend.finalize()
-                if final and final.text:
-                    self._type_text(final.text)
+            # Финализация (всегда вызываем при end, пропускаем только при cancel)
+            print("[daemon] вызываю finalize", file=sys.stderr)
+            final = self.backend.finalize()
+            if final and final.text:
+                self._type_text(final.text)
         except Exception as e:
             print(f"Ошибка диктовки: {e}", file=sys.stderr)
         finally:
@@ -246,6 +249,7 @@ class DictationDaemon:
     def handle_command(self, cmd: dict) -> dict:
         """Обработать команду от клиента."""
         action = cmd.get("action")
+        print(f"Команда: {action}", file=sys.stderr)
 
         handlers = {
             "begin": self.begin_dictation,
@@ -259,7 +263,9 @@ class DictationDaemon:
         if action not in handlers:
             return {"status": "error", "message": f"Неизвестная команда: {action}"}
 
-        return handlers[action]()
+        result = handlers[action]()
+        print(f"  -> {result.get('status')}: {result.get('message', result.get('state', ''))}", file=sys.stderr)
+        return result
 
     def _reload_backend(self, backend_name: str = None) -> dict:
         """Перезагрузить бэкенд."""
@@ -365,81 +371,18 @@ class DaemonClient:
             return False
 
 
-def start_daemon(config: dict, foreground: bool = False) -> None:
-    """Запустить daemon."""
-    if DaemonClient.is_running():
-        print("Daemon уже запущен", file=sys.stderr)
-        sys.exit(1)
+def run_daemon(config: dict) -> None:
+    """Запустить daemon (вызывается из CLI или systemd)."""
+    daemon = DictationDaemon(config)
 
-    if foreground:
-        # Запуск в текущем процессе (для отладки)
-        daemon = DictationDaemon(config)
+    def handle_signal(signum, frame):
+        daemon._running = False
 
-        def handle_signal(signum, frame):
-            daemon._running = False
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
 
-        signal.signal(signal.SIGTERM, handle_signal)
-        signal.signal(signal.SIGINT, handle_signal)
-
-        daemon.load_backend()
-        daemon.run()
-    else:
-        # Запуск в фоне через fork
-        pid = os.fork()
-        if pid > 0:
-            # Родительский процесс
-            print(f"Daemon запущен с PID {pid}", file=sys.stderr)
-            # Ждём немного и проверяем
-            time.sleep(0.5)
-            if DaemonClient.is_running():
-                print("Daemon готов к работе", file=sys.stderr)
-            else:
-                print("Ошибка запуска daemon", file=sys.stderr)
-                sys.exit(1)
-        else:
-            # Дочерний процесс — daemon
-            os.setsid()  # Новая сессия
-
-            # Закрываем стандартные потоки
-            sys.stdin.close()
-
-            # Перенаправляем stdout/stderr в лог
-            log_path = RUNTIME_DIR / "nerd-dictation-ex.log"
-            log_file = open(log_path, "a")
-            sys.stdout = log_file
-            sys.stderr = log_file
-
-            daemon = DictationDaemon(config)
-
-            def handle_signal(signum, frame):
-                daemon._running = False
-
-            signal.signal(signal.SIGTERM, handle_signal)
-            signal.signal(signal.SIGINT, handle_signal)
-
-            try:
-                daemon.load_backend()
-                daemon.run()
-            except Exception as e:
-                print(f"Ошибка daemon: {e}", file=sys.stderr)
-            finally:
-                log_file.close()
-
-
-def stop_daemon() -> None:
-    """Остановить daemon."""
-    if not DaemonClient.is_running():
-        print("Daemon не запущен", file=sys.stderr)
-        return
-
-    response = DaemonClient.send_command({"action": "shutdown"})
-    print(response.get("message", response), file=sys.stderr)
-
-    # Ждём завершения
-    for _ in range(10):
-        if not DaemonClient.is_running():
-            break
-        time.sleep(0.2)
+    daemon.load_backend()
+    daemon.run()
 
 
 def daemon_status() -> None:
