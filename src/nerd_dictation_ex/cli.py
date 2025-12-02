@@ -3,7 +3,7 @@
 nerd-dictation-ex CLI — главная точка входа.
 
 Использование:
-    # Запуск через systemd (рекомендуется)
+    # Запуск daemon через systemd (рекомендуется)
     systemctl --user start nerd-dictation-ex
     systemctl --user enable nerd-dictation-ex  # автозапуск
 
@@ -14,8 +14,6 @@ nerd-dictation-ex CLI — главная точка входа.
     nerd-dictation-ex cancel             # Отменить диктовку
 
     # Утилиты
-    nerd-dictation-ex daemon status      # Статус daemon
-    nerd-dictation-ex daemon reload      # Перезагрузить бэкенд
     nerd-dictation-ex list-backends      # Показать бэкенды
 """
 
@@ -134,30 +132,6 @@ def cmd_toggle(args, config: dict) -> None:
             _cmd_end_direct(args, config)
         else:
             _cmd_begin_direct(args, config)
-
-
-# ============================================================================
-# Команды daemon
-# ============================================================================
-
-def cmd_daemon(args, config: dict) -> None:
-    """Управление daemon'ом."""
-    from .daemon import run_daemon, daemon_status, DaemonClient
-
-    if args.daemon_command == "run":
-        # Запуск daemon (для systemd)
-        run_daemon(config)
-    elif args.daemon_command == "status":
-        daemon_status()
-    elif args.daemon_command == "reload":
-        if not DaemonClient.is_running():
-            print("Daemon не запущен", file=sys.stderr)
-            sys.exit(1)
-        response = DaemonClient.send_command({
-            "action": "reload",
-            "backend": args.backend,
-        })
-        print(response.get("message", response), file=sys.stderr)
 
 
 # ============================================================================
@@ -365,27 +339,12 @@ def main():
   # Запуск через systemd (рекомендуется):
   systemctl --user start nerd-dictation-ex   # Запустить daemon
   nerd-dictation-ex toggle                   # Переключить диктовку
-  nerd-dictation-ex daemon status            # Проверить статус
-
-  # Управление daemon:
-  nerd-dictation-ex daemon reload -b gigaam  # Сменить бэкенд
-  systemctl --user stop nerd-dictation-ex    # Остановить daemon
 
   # Без daemon (медленный старт):
   nerd-dictation-ex begin --no-daemon        # Загружать модель каждый раз
         """
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # daemon
-    daemon_parser = subparsers.add_parser("daemon", help="Управление фоновым сервисом")
-    daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", required=True)
-
-    daemon_subparsers.add_parser("run", help="Запустить daemon (для systemd)")
-    daemon_subparsers.add_parser("status", help="Показать статус daemon")
-
-    daemon_reload = daemon_subparsers.add_parser("reload", help="Перезагрузить бэкенд")
-    daemon_reload.add_argument("--backend", "-b", help="Новый бэкенд")
 
     # begin
     begin_parser = subparsers.add_parser("begin", help="Начать диктовку")
@@ -408,9 +367,7 @@ def main():
     args = parser.parse_args()
     config = load_config()
 
-    if args.command == "daemon":
-        cmd_daemon(args, config)
-    elif args.command == "begin":
+    if args.command == "begin":
         if getattr(args, "no_daemon", False):
             _cmd_begin_direct(args, config)
         else:

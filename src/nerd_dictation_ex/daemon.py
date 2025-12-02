@@ -398,3 +398,10 @@ def daemon_status() -> None:
         print(f"  Бэкенд: {response.get('backend')}")
     else:
         print(f"Ошибка: {response.get('message')}")
+
+
+def main() -> None:
+    """Точка входа для nerd-dictation-ex-daemon (используется systemd)."""
+    from .cli import load_config
+    config = load_config()
+    run_daemon(config)
