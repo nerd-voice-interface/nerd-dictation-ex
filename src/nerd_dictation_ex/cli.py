@@ -161,18 +161,16 @@ class DictationDaemon:
         while self._running:
             try:
                 self._audio_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-                fd = self._audio_proc.stdout.fileno()
-                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
+                # Блокирующее чтение — ждём пока накопится chunk_size байт
                 while self._running and self._audio_proc.poll() is None:
-                    try:
-                        chunk = self._audio_proc.stdout.read(chunk_size)
-                        if chunk:
-                            with self._audio_buffer_lock:
-                                self._audio_buffer.append(chunk)
-                    except BlockingIOError:
-                        time.sleep(0.01)
+                    chunk = self._audio_proc.stdout.read(chunk_size)
+                    if chunk:
+                        with self._audio_buffer_lock:
+                            self._audio_buffer.append(chunk)
+                    elif not chunk:
+                        # EOF или процесс завершился
+                        break
             except Exception as e:
                 print(f"Ошибка аудио-слушателя: {e}", file=sys.stderr)
             finally:
