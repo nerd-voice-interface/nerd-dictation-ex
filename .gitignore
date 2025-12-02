@@ -38,3 +38,4 @@ models/
 *.bin
 *.pt
 *.onnx
+src/nerd_dictation_ex/log

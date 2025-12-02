@@ -3,17 +3,19 @@
 nerd-dictation-ex CLI — главная точка входа.
 
 Использование:
-    # Daemon (рекомендуется для быстрого отклика)
-    nerd-dictation-ex daemon start       # Запустить daemon
-    nerd-dictation-ex daemon stop        # Остановить daemon
-    nerd-dictation-ex daemon status      # Статус daemon
+    # Запуск через systemd (рекомендуется)
+    systemctl --user start nerd-dictation-ex
+    systemctl --user enable nerd-dictation-ex  # автозапуск
 
-    # Диктовка (через daemon если запущен, иначе напрямую)
+    # Диктовка
+    nerd-dictation-ex toggle             # Переключить диктовку
     nerd-dictation-ex begin              # Начать диктовку
     nerd-dictation-ex end                # Завершить диктовку
     nerd-dictation-ex cancel             # Отменить диктовку
 
     # Утилиты
+    nerd-dictation-ex daemon status      # Статус daemon
+    nerd-dictation-ex daemon reload      # Перезагрузить бэкенд
     nerd-dictation-ex list-backends      # Показать бэкенды
 """
 
