@@ -29,6 +29,7 @@ import threading
 import time
 from enum import Enum
 from pathlib import Path
+from collections import deque
 from typing import Optional, Generator
 
 # Пути
@@ -87,6 +88,9 @@ class DaemonState(Enum):
 class DictationDaemon:
     """Daemon для nerd-dictation-ex. Держит модель в памяти."""
 
+    # Размер кольцевого буфера в секундах
+    AUDIO_BUFFER_SECONDS = 1.5
+
     def __init__(self, config: dict):
         self.config = config
         self.state = DaemonState.IDLE
@@ -96,6 +100,17 @@ class DictationDaemon:
         self._running = True
         self._dictation_thread: Optional[threading.Thread] = None
         self._stop_dictation = threading.Event()
+
+        # Кольцевой буфер аудио
+        sample_rate = config.get("audio", {}).get("sample_rate", 16000)
+        chunk_size = config.get("audio", {}).get("chunk_size", 8000)
+        # Сколько чанков помещается в буфер
+        bytes_per_second = sample_rate * 2  # 16-bit = 2 bytes per sample
+        buffer_bytes = int(bytes_per_second * self.AUDIO_BUFFER_SECONDS)
+        self._buffer_max_chunks = max(1, buffer_bytes // chunk_size)
+        self._audio_buffer: deque = deque(maxlen=self._buffer_max_chunks)
+        self._audio_buffer_lock = threading.Lock()
+        self._audio_listener_thread: Optional[threading.Thread] = None
 
     def load_backend(self, backend_name: str = None) -> None:
         """Загрузить бэкенд и модель в память."""
@@ -127,30 +142,69 @@ class DictationDaemon:
 
         print(f"Бэкенд {backend_name} загружен и готов", file=sys.stderr)
 
-    def _audio_stream(self) -> Generator[bytes, None, None]:
-        """Генератор аудио-чанков."""
+    def _start_audio_listener(self) -> None:
+        """Запустить постоянный слушатель аудио."""
+        if self._audio_listener_thread and self._audio_listener_thread.is_alive():
+            return
+
+        self._audio_listener_thread = threading.Thread(
+            target=self._audio_listener_loop, daemon=True
+        )
+        self._audio_listener_thread.start()
+        print("Аудио-слушатель запущен", file=sys.stderr)
+
+    def _audio_listener_loop(self) -> None:
+        """Постоянно слушать микрофон и заполнять кольцевой буфер."""
         cmd = _get_audio_command(self.config)
         chunk_size = self.config.get("audio", {}).get("chunk_size", 8000)
 
-        self._audio_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        while self._running:
+            try:
+                self._audio_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+                fd = self._audio_proc.stdout.fileno()
+                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
-        fd = self._audio_proc.stdout.fileno()
-        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                while self._running and self._audio_proc.poll() is None:
+                    try:
+                        chunk = self._audio_proc.stdout.read(chunk_size)
+                        if chunk:
+                            with self._audio_buffer_lock:
+                                self._audio_buffer.append(chunk)
+                    except BlockingIOError:
+                        time.sleep(0.01)
+            except Exception as e:
+                print(f"Ошибка аудио-слушателя: {e}", file=sys.stderr)
+            finally:
+                if self._audio_proc:
+                    self._audio_proc.terminate()
+                    self._audio_proc.wait()
+                    self._audio_proc = None
 
-        try:
-            while not self._stop_dictation.is_set() and self._audio_proc.poll() is None:
-                try:
-                    chunk = self._audio_proc.stdout.read(chunk_size)
-                    if chunk:
-                        yield chunk
-                except BlockingIOError:
-                    time.sleep(0.01)
-        finally:
-            if self._audio_proc:
-                self._audio_proc.terminate()
-                self._audio_proc.wait()
-                self._audio_proc = None
+            if self._running:
+                time.sleep(0.5)  # Пауза перед перезапуском
+
+    def _audio_stream(self) -> Generator[bytes, None, None]:
+        """Генератор аудио-чанков: сначала буфер, потом живой поток."""
+        # Сначала отдаём накопленный буфер
+        with self._audio_buffer_lock:
+            buffered = list(self._audio_buffer)
+            self._audio_buffer.clear()
+
+        for chunk in buffered:
+            if self._stop_dictation.is_set():
+                return
+            yield chunk
+
+        # Затем читаем живой поток
+        chunk_size = self.config.get("audio", {}).get("chunk_size", 8000)
+        while not self._stop_dictation.is_set():
+            with self._audio_buffer_lock:
+                if self._audio_buffer:
+                    chunk = self._audio_buffer.popleft()
+                    yield chunk
+                    continue
+            time.sleep(0.01)
 
     def _type_text(self, text: str) -> None:
         """Ввести текст через выбранный метод."""
@@ -204,9 +258,6 @@ class DictationDaemon:
 
         self._stop_dictation.set()
 
-        if self._audio_proc:
-            self._audio_proc.terminate()
-
         if self._dictation_thread:
             self._dictation_thread.join(timeout=2.0)
 
@@ -219,10 +270,6 @@ class DictationDaemon:
             return {"status": "error", "message": "Диктовка не запущена"}
 
         self._stop_dictation.set()
-
-        if self._audio_proc:
-            self._audio_proc.kill()
-
         self.backend.reset()
         self.state = DaemonState.IDLE
 
@@ -290,6 +337,9 @@ class DictationDaemon:
         server.settimeout(1.0)
 
         PID_FILE.write_text(str(os.getpid()))
+
+        # Запустить постоянный аудио-слушатель
+        self._start_audio_listener()
 
         print(f"Daemon запущен, socket: {SOCKET_PATH}", file=sys.stderr)
 
