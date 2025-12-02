@@ -188,31 +188,8 @@ def _audio_stream(config: dict) -> Generator[bytes, None, None]:
 
 def _type_text(text: str, config: dict) -> None:
     """Ввести текст через выбранный метод."""
-    if not text:
-        return
-
-    output_config = config.get("output", {})
-    if output_config.get("trailing_space", True):
-        text = text + " "
-
-    method = config.get("general", {}).get("input_method", "ydotool")
-
-    commands = {
-        "ydotool": ["ydotool", "type", "--"],
-        "dotool": ["dotool"],
-        "xdotool": ["xdotool", "type", "--"],
-        "wtype": ["wtype", "--"],
-    }
-
-    if method == "stdout":
-        print(text, end="", flush=True)
-    elif method in commands:
-        cmd = commands[method]
-        if "dotool" in cmd[0]:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            proc.communicate(f"type {text}".encode())
-        else:
-            subprocess.run(cmd + [text], check=False)
+    from .input import type_text
+    type_text(text, config)
 
 
 def _cmd_begin_direct(args, config: dict) -> None:

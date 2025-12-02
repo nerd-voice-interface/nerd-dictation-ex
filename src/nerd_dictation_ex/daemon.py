@@ -129,37 +129,8 @@ class DictationDaemon:
 
     def _type_text(self, text: str) -> None:
         """Ввести текст через выбранный метод."""
-        print(f"[daemon] _type_text вызван с: '{text}'", file=sys.stderr)
-        if not text:
-            print("[daemon] _type_text: пустой текст, пропуск", file=sys.stderr)
-            return
-
-        output_config = self.config.get("output", {})
-        if output_config.get("trailing_space", True):
-            text = text + " "
-
-        method = self.config.get("general", {}).get("input_method", "xdotool")
-        print(f"[daemon] _type_text: метод={method}, текст='{text}'", file=sys.stderr)
-
-        commands = {
-            "ydotool": ["ydotool", "type", "--"],
-            "dotool": ["dotool"],
-            "xdotool": ["xdotool", "type", "--"],
-            "wtype": ["wtype"],
-        }
-
-        if method == "stdout":
-            print(text, end="", flush=True)
-        elif method in commands:
-            import shlex
-            cmd = commands[method]
-            shell_cmd = f'{" ".join(cmd)} {shlex.quote(text)}'
-            print(f"[daemon] выполняю: {shell_cmd}", file=sys.stderr)
-            result = subprocess.run(shell_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[daemon] ошибка: {result.stderr}", file=sys.stderr)
-            else:
-                print(f"[daemon] успех", file=sys.stderr)
+        from .input import type_text
+        type_text(text, self.config)
 
     def _dictation_loop(self) -> None:
         """Основной цикл диктовки (в отдельном потоке)."""
