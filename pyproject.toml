@@ -41,7 +41,6 @@ all = [
 
 [project.scripts]
 nerd-dictation-ex = "nerd_dictation_ex.cli:main"
-nerd-dictation-ex-daemon = "nerd_dictation_ex.cli:daemon_main"
 
 [project.urls]
 Homepage = "https://github.com/marcusmae/nerd-dictation-ex"

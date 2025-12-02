@@ -582,8 +582,22 @@ def cmd_list_backends(args, config: dict) -> None:
 # Main
 # ============================================================================
 
+def _run_daemon(config: dict) -> None:
+    """Запустить daemon (для systemd)."""
+    daemon = DictationDaemon(config)
+
+    def handle_signal(signum, frame):
+        daemon._running = False
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    daemon.load_backend()
+    daemon.run()
+
+
 def main():
-    """Точка входа для nerd-dictation-ex CLI."""
+    """Точка входа для nerd-dictation-ex."""
     parser = argparse.ArgumentParser(
         description="nerd-dictation-ex — диктовка с подключаемыми бэкендами ASR",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -598,6 +612,9 @@ def main():
         """
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # daemon (для systemd)
+    subparsers.add_parser("daemon", help="Запустить daemon (для systemd)")
 
     # begin
     begin_parser = subparsers.add_parser("begin", help="Начать диктовку")
@@ -620,7 +637,9 @@ def main():
     args = parser.parse_args()
     config = load_config()
 
-    if args.command == "begin":
+    if args.command == "daemon":
+        _run_daemon(config)
+    elif args.command == "begin":
         if getattr(args, "no_daemon", False):
             _cmd_begin_direct(args, config)
         else:
@@ -633,21 +652,6 @@ def main():
         cmd_toggle(args, config)
     elif args.command == "list-backends":
         cmd_list_backends(args, config)
-
-
-def daemon_main():
-    """Точка входа для nerd-dictation-ex-daemon (используется systemd)."""
-    config = load_config()
-    daemon = DictationDaemon(config)
-
-    def handle_signal(signum, frame):
-        daemon._running = False
-
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
-
-    daemon.load_backend()
-    daemon.run()
 
 
 if __name__ == "__main__":

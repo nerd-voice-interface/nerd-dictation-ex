@@ -6,7 +6,7 @@ Wants=pipewire.service
 
 [Service]
 Type=simple
-ExecStart=%h/forge/nerd-dictation-ex/.venv/bin/nerd-dictation-ex-daemon
+ExecStart=%h/forge/nerd-dictation-ex/.venv/bin/nerd-dictation-ex daemon
 Restart=on-failure
 RestartSec=5
 
