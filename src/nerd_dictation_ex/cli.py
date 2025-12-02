@@ -19,14 +19,24 @@ nerd-dictation-ex CLI — главная точка входа.
 
 import argparse
 import fcntl
+import json
 import os
 import signal
+import socket
 import subprocess
 import sys
+import threading
+import time
+from enum import Enum
 from pathlib import Path
-from typing import Generator
+from typing import Optional, Generator
 
-# Пути конфигурации
+# Пути
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+SOCKET_PATH = RUNTIME_DIR / "nerd-dictation-ex.sock"
+PID_FILE = RUNTIME_DIR / "nerd-dictation-ex.pid"
+COOKIE_PATH = Path("/tmp/nerd-dictation-ex.cookie")
+
 CONFIG_DIRS = [
     Path.home() / ".config" / "nerd-dictation-ex",
     Path(__file__).parent.parent.parent.parent / "config",  # Для dev-режима
@@ -55,7 +65,7 @@ def load_config() -> dict:
 
     # Встроенный дефолт
     return {
-        "general": {"backend": "vosk", "input_method": "ydotool"},
+        "general": {"backend": "vosk", "input_method": "xdotool"},
         "audio": {"source": "pw-cat", "sample_rate": 16000, "chunk_size": 8000},
         "vosk": {"model_path": "~/.local/share/vosk/vosk-model-ru"},
         "gigaam": {"model_name": "v3_ctc", "device": "cuda"},
@@ -64,15 +74,300 @@ def load_config() -> dict:
 
 
 # ============================================================================
-# Команды для работы через daemon (рекомендуется)
+# Daemon
+# ============================================================================
+
+class DaemonState(Enum):
+    """Состояние daemon'а."""
+    IDLE = "idle"
+    LISTENING = "listening"
+    STOPPING = "stopping"
+
+
+class DictationDaemon:
+    """Daemon для nerd-dictation-ex. Держит модель в памяти."""
+
+    def __init__(self, config: dict):
+        self.config = config
+        self.state = DaemonState.IDLE
+        self.backend = None
+        self.backend_name = None
+        self._audio_proc: Optional[subprocess.Popen] = None
+        self._running = True
+        self._dictation_thread: Optional[threading.Thread] = None
+        self._stop_dictation = threading.Event()
+
+    def load_backend(self, backend_name: str = None) -> None:
+        """Загрузить бэкенд и модель в память."""
+        from . import get_backend
+
+        backend_name = backend_name or self.config.get("general", {}).get("backend", "vosk")
+
+        if self.backend and self.backend_name == backend_name:
+            print(f"Бэкенд {backend_name} уже загружен", file=sys.stderr)
+            return
+
+        print(f"Загрузка бэкенда: {backend_name}...", file=sys.stderr)
+        self.backend = get_backend(backend_name)
+        self.backend_name = backend_name
+
+        backend_config = self.config.get(backend_name, {})
+        sample_rate = self.config.get("audio", {}).get("sample_rate", 16000)
+
+        if backend_name == "vosk":
+            model_path = os.path.expanduser(backend_config.get("model_path", ""))
+            self.backend.load_model(model_path, sample_rate=sample_rate)
+        elif backend_name == "gigaam":
+            self.backend.load_model(
+                model_name=backend_config.get("model_name", "v3_ctc"),
+                device=backend_config.get("device", "cuda"),
+            )
+        else:
+            self.backend.load_model(**backend_config)
+
+        print(f"Бэкенд {backend_name} загружен и готов", file=sys.stderr)
+
+    def _audio_stream(self) -> Generator[bytes, None, None]:
+        """Генератор аудио-чанков."""
+        cmd = _get_audio_command(self.config)
+        chunk_size = self.config.get("audio", {}).get("chunk_size", 8000)
+
+        self._audio_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+
+        fd = self._audio_proc.stdout.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+        try:
+            while not self._stop_dictation.is_set() and self._audio_proc.poll() is None:
+                try:
+                    chunk = self._audio_proc.stdout.read(chunk_size)
+                    if chunk:
+                        yield chunk
+                except BlockingIOError:
+                    time.sleep(0.01)
+        finally:
+            if self._audio_proc:
+                self._audio_proc.terminate()
+                self._audio_proc.wait()
+                self._audio_proc = None
+
+    def _type_text(self, text: str) -> None:
+        """Ввести текст через выбранный метод."""
+        from .input import type_text
+        type_text(text, self.config)
+
+    def _dictation_loop(self) -> None:
+        """Основной цикл диктовки (в отдельном потоке)."""
+        sample_rate = self.config.get("audio", {}).get("sample_rate", 16000)
+
+        try:
+            for result in self.backend.transcribe_stream(
+                self._audio_stream(),
+                sample_rate=sample_rate,
+            ):
+                if self._stop_dictation.is_set():
+                    break
+                if result.is_final and result.text:
+                    self._type_text(result.text)
+
+            print("[daemon] вызываю finalize", file=sys.stderr)
+            final = self.backend.finalize()
+            if final and final.text:
+                self._type_text(final.text)
+        except Exception as e:
+            print(f"Ошибка диктовки: {e}", file=sys.stderr)
+        finally:
+            self.backend.reset()
+            self.state = DaemonState.IDLE
+
+    def begin_dictation(self) -> dict:
+        """Начать диктовку."""
+        if self.state == DaemonState.LISTENING:
+            return {"status": "error", "message": "Диктовка уже запущена"}
+
+        if not self.backend:
+            return {"status": "error", "message": "Бэкенд не загружен"}
+
+        self.state = DaemonState.LISTENING
+        self._stop_dictation.clear()
+
+        self._dictation_thread = threading.Thread(target=self._dictation_loop, daemon=True)
+        self._dictation_thread.start()
+
+        return {"status": "ok", "message": "Диктовка запущена"}
+
+    def end_dictation(self) -> dict:
+        """Завершить диктовку с выводом текста."""
+        if self.state != DaemonState.LISTENING:
+            return {"status": "error", "message": "Диктовка не запущена"}
+
+        self._stop_dictation.set()
+
+        if self._audio_proc:
+            self._audio_proc.terminate()
+
+        if self._dictation_thread:
+            self._dictation_thread.join(timeout=2.0)
+
+        self.state = DaemonState.IDLE
+        return {"status": "ok", "message": "Диктовка завершена"}
+
+    def cancel_dictation(self) -> dict:
+        """Отменить диктовку без вывода."""
+        if self.state != DaemonState.LISTENING:
+            return {"status": "error", "message": "Диктовка не запущена"}
+
+        self._stop_dictation.set()
+
+        if self._audio_proc:
+            self._audio_proc.kill()
+
+        self.backend.reset()
+        self.state = DaemonState.IDLE
+
+        if self._dictation_thread:
+            self._dictation_thread.join(timeout=1.0)
+
+        return {"status": "ok", "message": "Диктовка отменена"}
+
+    def get_status(self) -> dict:
+        """Получить статус daemon'а."""
+        return {
+            "status": "ok",
+            "state": self.state.value,
+            "backend": self.backend_name,
+            "pid": os.getpid(),
+        }
+
+    def handle_command(self, cmd: dict) -> dict:
+        """Обработать команду от клиента."""
+        action = cmd.get("action")
+        print(f"Команда: {action}", file=sys.stderr)
+
+        handlers = {
+            "begin": self.begin_dictation,
+            "end": self.end_dictation,
+            "cancel": self.cancel_dictation,
+            "status": self.get_status,
+            "reload": lambda: self._reload_backend(cmd.get("backend")),
+            "shutdown": self._shutdown,
+        }
+
+        if action not in handlers:
+            return {"status": "error", "message": f"Неизвестная команда: {action}"}
+
+        result = handlers[action]()
+        print(f"  -> {result.get('status')}: {result.get('message', result.get('state', ''))}", file=sys.stderr)
+        return result
+
+    def _reload_backend(self, backend_name: str = None) -> dict:
+        """Перезагрузить бэкенд."""
+        if self.state == DaemonState.LISTENING:
+            return {"status": "error", "message": "Остановите диктовку перед перезагрузкой"}
+
+        try:
+            self.backend = None
+            self.backend_name = None
+            self.load_backend(backend_name)
+            return {"status": "ok", "message": f"Бэкенд {self.backend_name} перезагружен"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def _shutdown(self) -> dict:
+        """Остановить daemon."""
+        self._running = False
+        return {"status": "ok", "message": "Daemon останавливается"}
+
+    def run(self) -> None:
+        """Запустить daemon."""
+        if SOCKET_PATH.exists():
+            SOCKET_PATH.unlink()
+
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(SOCKET_PATH))
+        server.listen(5)
+        server.settimeout(1.0)
+
+        PID_FILE.write_text(str(os.getpid()))
+
+        print(f"Daemon запущен, socket: {SOCKET_PATH}", file=sys.stderr)
+
+        try:
+            while self._running:
+                try:
+                    client, _ = server.accept()
+                    self._handle_client(client)
+                except socket.timeout:
+                    continue
+        finally:
+            server.close()
+            SOCKET_PATH.unlink(missing_ok=True)
+            PID_FILE.unlink(missing_ok=True)
+            print("Daemon остановлен", file=sys.stderr)
+
+    def _handle_client(self, client: socket.socket) -> None:
+        """Обработать подключение клиента."""
+        try:
+            data = client.recv(4096).decode()
+            if data:
+                cmd = json.loads(data)
+                response = self.handle_command(cmd)
+                client.send(json.dumps(response).encode())
+        except Exception as e:
+            error_response = {"status": "error", "message": str(e)}
+            client.send(json.dumps(error_response).encode())
+        finally:
+            client.close()
+
+
+class DaemonClient:
+    """Клиент для общения с daemon'ом."""
+
+    @staticmethod
+    def send_command(cmd: dict, timeout: float = 5.0) -> dict:
+        """Отправить команду daemon'у."""
+        if not SOCKET_PATH.exists():
+            return {"status": "error", "message": "Daemon не запущен"}
+
+        try:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(timeout)
+            client.connect(str(SOCKET_PATH))
+            client.send(json.dumps(cmd).encode())
+            response = client.recv(4096).decode()
+            client.close()
+            return json.loads(response)
+        except socket.timeout:
+            return {"status": "error", "message": "Таймаут соединения с daemon"}
+        except ConnectionRefusedError:
+            return {"status": "error", "message": "Daemon не отвечает"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @staticmethod
+    def is_running() -> bool:
+        """Проверить, запущен ли daemon."""
+        if not PID_FILE.exists():
+            return False
+
+        try:
+            pid = int(PID_FILE.read_text())
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, ValueError):
+            PID_FILE.unlink(missing_ok=True)
+            SOCKET_PATH.unlink(missing_ok=True)
+            return False
+
+
+# ============================================================================
+# Команды для работы через daemon
 # ============================================================================
 
 def cmd_begin(args, config: dict) -> None:
     """Начать диктовку (через daemon или напрямую)."""
-    from .daemon import DaemonClient
-
     if DaemonClient.is_running():
-        # Используем daemon
         response = DaemonClient.send_command({"action": "begin"})
         if response.get("status") == "ok":
             print("Диктовка запущена", file=sys.stderr)
@@ -80,16 +375,13 @@ def cmd_begin(args, config: dict) -> None:
             print(f"Ошибка: {response.get('message')}", file=sys.stderr)
             sys.exit(1)
     else:
-        # Fallback: запуск напрямую (медленно)
         print("Daemon не запущен, загрузка модели...", file=sys.stderr)
-        print("Для быстрого отклика запустите: nerd-dictation-ex daemon start", file=sys.stderr)
+        print("Для быстрого отклика: systemctl --user start nerd-dictation-ex", file=sys.stderr)
         _cmd_begin_direct(args, config)
 
 
 def cmd_end(args, config: dict) -> None:
     """Завершить диктовку."""
-    from .daemon import DaemonClient, SOCKET_PATH
-
     if DaemonClient.is_running():
         response = DaemonClient.send_command({"action": "end"})
         if response.get("status") == "ok":
@@ -97,14 +389,11 @@ def cmd_end(args, config: dict) -> None:
         else:
             print(f"Ошибка: {response.get('message')}", file=sys.stderr)
     else:
-        # Fallback для прямого режима
         _cmd_end_direct(args, config)
 
 
 def cmd_cancel(args, config: dict) -> None:
     """Отменить диктовку."""
-    from .daemon import DaemonClient
-
     if DaemonClient.is_running():
         response = DaemonClient.send_command({"action": "cancel"})
         if response.get("status") == "ok":
@@ -117,17 +406,13 @@ def cmd_cancel(args, config: dict) -> None:
 
 def cmd_toggle(args, config: dict) -> None:
     """Переключить диктовку (begin/end)."""
-    from .daemon import DaemonClient
-
     if DaemonClient.is_running():
-        # Проверяем статус
         status = DaemonClient.send_command({"action": "status"})
         if status.get("state") == "listening":
             cmd_end(args, config)
         else:
             cmd_begin(args, config)
     else:
-        # Без daemon — проверяем cookie
         if COOKIE_PATH.exists():
             _cmd_end_direct(args, config)
         else:
@@ -137,9 +422,6 @@ def cmd_toggle(args, config: dict) -> None:
 # ============================================================================
 # Fallback: прямой режим (без daemon)
 # ============================================================================
-
-COOKIE_PATH = Path("/tmp/nerd-dictation-ex.cookie")
-
 
 def _get_audio_command(config: dict) -> list:
     """Получить команду для записи аудио."""
@@ -162,8 +444,6 @@ def _get_audio_command(config: dict) -> list:
 
 def _audio_stream(config: dict) -> Generator[bytes, None, None]:
     """Генератор аудио-чанков."""
-    import time
-
     cmd = _get_audio_command(config)
     chunk_size = config.get("audio", {}).get("chunk_size", 8000)
 
@@ -186,21 +466,16 @@ def _audio_stream(config: dict) -> Generator[bytes, None, None]:
         proc.wait()
 
 
-def _type_text(text: str, config: dict) -> None:
-    """Ввести текст через выбранный метод."""
-    from .input import type_text
-    type_text(text, config)
-
-
 def _cmd_begin_direct(args, config: dict) -> None:
     """Начать диктовку напрямую (без daemon)."""
     from . import get_backend, get_available_backends
+    from .input import type_text
 
     if COOKIE_PATH.exists():
         print("Диктовка уже запущена. Используйте 'end' или 'cancel'.", file=sys.stderr)
         sys.exit(1)
 
-    backend_name = args.backend or config.get("general", {}).get("backend", "vosk")
+    backend_name = getattr(args, 'backend', None) or config.get("general", {}).get("backend", "vosk")
 
     available = get_available_backends()
     if not available:
@@ -254,12 +529,12 @@ def _cmd_begin_direct(args, config: dict) -> None:
                 if not running:
                     break
                 if result.is_final and result.text:
-                    _type_text(result.text, config)
+                    type_text(result.text, config)
 
             if running:
                 final = backend.finalize()
                 if final and final.text:
-                    _type_text(final.text, config)
+                    type_text(final.text, config)
     finally:
         COOKIE_PATH.unlink(missing_ok=True)
         print("\nДиктовка завершена.", file=sys.stderr)
@@ -308,6 +583,7 @@ def cmd_list_backends(args, config: dict) -> None:
 # ============================================================================
 
 def main():
+    """Точка входа для nerd-dictation-ex CLI."""
     parser = argparse.ArgumentParser(
         description="nerd-dictation-ex — диктовка с подключаемыми бэкендами ASR",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -357,6 +633,21 @@ def main():
         cmd_toggle(args, config)
     elif args.command == "list-backends":
         cmd_list_backends(args, config)
+
+
+def daemon_main():
+    """Точка входа для nerd-dictation-ex-daemon (используется systemd)."""
+    config = load_config()
+    daemon = DictationDaemon(config)
+
+    def handle_signal(signum, frame):
+        daemon._running = False
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    daemon.load_backend()
+    daemon.run()
 
 
 if __name__ == "__main__":
