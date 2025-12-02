@@ -197,7 +197,6 @@ class DictationDaemon:
             yield chunk
 
         # Затем читаем живой поток
-        chunk_size = self.config.get("audio", {}).get("chunk_size", 8000)
         while not self._stop_dictation.is_set():
             with self._audio_buffer_lock:
                 if self._audio_buffer:
