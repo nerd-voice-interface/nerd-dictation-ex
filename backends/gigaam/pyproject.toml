@@ -27,11 +27,8 @@ dependencies = [
     "omegaconf>=2.3",
     "soundfile>=0.12",
     "librosa>=0.10",
+    "gigaam @ git+https://github.com/salute-developers/GigaAM.git",
 ]
-
-[project.optional-dependencies]
-# GigaAM устанавливается из GitHub
-gigaam = ["gigaam"]
 
 [project.scripts]
 nerd-dictation-gigaam-setup = "nerd_dictation_gigaam.setup:main"

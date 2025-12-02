@@ -49,7 +49,10 @@ class GigaAMBackend(ASRBackend):
 
         Args:
             model_path: Игнорируется, модель загружается по имени
+            device: "cuda", "cpu", или "auto" (попробовать cuda, fallback на cpu)
         """
+        import sys
+
         try:
             import gigaam
         except ImportError:
@@ -60,18 +63,41 @@ class GigaAMBackend(ASRBackend):
             )
 
         model_name = kwargs.get("model_name", self._model_name)
+        device = kwargs.get("device", self._device)
+
         if model_name not in self.MODELS:
             available = ", ".join(self.MODELS.keys())
             raise ValueError(f"Неизвестная модель: {model_name}. Доступны: {available}")
 
         self._model = gigaam.load_model(model_name)
-        if self._device == "cuda":
+
+        # Определяем устройство
+        if device in ("cuda", "auto"):
             import torch
             if torch.cuda.is_available():
-                self._model = self._model.cuda()
+                try:
+                    # Пробуем загрузить на GPU и выполнить тестовый inference
+                    self._model = self._model.cuda()
+                    # Тест: создаём маленький тензор и проверяем что CUDA работает
+                    test_tensor = torch.zeros(1, device="cuda")
+                    del test_tensor
+                    self._device = "cuda"
+                    print("[gigaam] Используется CUDA", file=sys.stderr)
+                except RuntimeError as e:
+                    if "no kernel image" in str(e) or "CUDA" in str(e):
+                        print(f"[gigaam] CUDA недоступна для этого GPU: {e}", file=sys.stderr)
+                        print("[gigaam] Переключаюсь на CPU", file=sys.stderr)
+                        self._model = self._model.cpu()
+                        self._device = "cpu"
+                    else:
+                        raise
             else:
-                print("CUDA недоступна, используется CPU")
+                if device == "cuda":
+                    print("[gigaam] CUDA недоступна, используется CPU", file=sys.stderr)
                 self._device = "cpu"
+        else:
+            self._device = "cpu"
+            print("[gigaam] Используется CPU", file=sys.stderr)
 
     def transcribe_stream(
         self,
