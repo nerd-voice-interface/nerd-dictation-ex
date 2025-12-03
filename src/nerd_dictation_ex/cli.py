@@ -205,10 +205,15 @@ class DictationDaemon:
 
     def _type_text(self, text: str) -> None:
         """Ввести текст через выбранный метод."""
-        from .input import type_text
-        from .postprocess import process_text
-        text = process_text(text)
-        type_text(text, self.config)
+        from .input import type_text, press_keys
+        from .postprocess import process_text, TextAction, KeyAction
+
+        actions = process_text(text)
+        for action in actions:
+            if isinstance(action, TextAction):
+                type_text(action.text, self.config)
+            elif isinstance(action, KeyAction):
+                press_keys(action.keys, self.config)
 
     def _dictation_loop(self) -> None:
         """Основной цикл диктовки (в отдельном потоке)."""

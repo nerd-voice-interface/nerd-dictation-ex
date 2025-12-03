@@ -2,13 +2,36 @@
 Постобработка распознанного текста.
 
 - Замена слов на знаки препинания
+- Замена слов на нажатия клавиш
 - Капитализация после точки/!/?
 - Капитализация в начале диктовки
 """
 
 import re
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, List, Union
 
+
+@dataclass
+class TextAction:
+    """Действие: ввод текста."""
+    text: str
+
+
+@dataclass
+class KeyAction:
+    """Действие: нажатие клавиш."""
+    keys: str  # Формат xdotool: "ctrl+Return", "shift+Tab", etc.
+
+
+Action = Union[TextAction, KeyAction]
+
+
+# Слова → нажатия клавиш (обрабатываются до замены пунктуации)
+KEY_MAP = {
+    "выполнять": "ctrl+Return",
+    "выполняй": "ctrl+Return",
+}
 
 # Слова → знаки препинания
 PUNCTUATION_MAP = {
@@ -53,19 +76,52 @@ class TextPostProcessor:
         self._capitalize_next = True  # Начинаем с большой буквы
         self._pending_space = False   # Буферизованный пробел в конце
 
-    def process(self, text: str) -> str:
+    def process(self, text: str) -> List[Action]:
         """
-        Обработать текст: заменить слова на пунктуацию, капитализировать.
+        Обработать текст: заменить слова на пунктуацию/клавиши, капитализировать.
 
         Args:
             text: Распознанный текст
 
         Returns:
-            Обработанный текст
+            Список действий (TextAction или KeyAction)
         """
         if not text:
-            return text
+            return []
 
+        # Разбиваем на части по ключевым словам (клавиши)
+        actions = self._extract_key_actions(text)
+
+        return actions
+
+    def _extract_key_actions(self, text: str) -> List[Action]:
+        """Извлечь действия клавиш и текстовые фрагменты."""
+        actions = []
+
+        # Сортируем по длине (сначала длинные фразы)
+        for word, keys in sorted(KEY_MAP.items(), key=lambda x: -len(x[0])):
+            pattern = r'(?i)(?<!\S)' + re.escape(word) + r'(?!\S)'
+            parts = re.split(pattern, text)
+
+            if len(parts) > 1:
+                # Найдено ключевое слово — разбиваем
+                result = []
+                for i, part in enumerate(parts):
+                    if part.strip():
+                        result.extend(self._extract_key_actions(part))
+                    if i < len(parts) - 1:
+                        result.append(KeyAction(keys=keys))
+                return result
+
+        # Нет ключевых слов — обрабатываем как текст
+        processed = self._process_text_fragment(text)
+        if processed:
+            actions.append(TextAction(text=processed))
+
+        return actions
+
+    def _process_text_fragment(self, text: str) -> str:
+        """Обработать текстовый фрагмент (пунктуация, капитализация)."""
         # Заменяем слова на знаки препинания
         text = self._replace_punctuation(text)
 
@@ -73,7 +129,7 @@ class TextPostProcessor:
         text = text.strip()
 
         if not text:
-            return text
+            return ""
 
         # Добавляем буферизованный пробел от предыдущего фрагмента
         first_char = text[0]
@@ -147,7 +203,7 @@ def get_processor() -> TextPostProcessor:
     return _processor
 
 
-def process_text(text: str) -> str:
+def process_text(text: str) -> List[Action]:
     """Обработать текст (удобная функция)."""
     return get_processor().process(text)
 
