@@ -26,9 +26,7 @@ def type_text(text: str, config: dict) -> None:
     if not text:
         return
 
-    output_config = config.get("output", {})
-    if output_config.get("trailing_space", True):
-        text = text + " "
+    # trailing_space теперь управляется постпроцессором
 
     method = config.get("general", {}).get("input_method", "xdotool")
 

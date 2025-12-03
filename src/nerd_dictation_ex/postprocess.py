@@ -51,6 +51,7 @@ class TextPostProcessor:
 
     def __init__(self):
         self._capitalize_next = True  # Начинаем с большой буквы
+        self._pending_space = False   # Буферизованный пробел в конце
 
     def process(self, text: str) -> str:
         """
@@ -67,6 +68,20 @@ class TextPostProcessor:
 
         # Заменяем слова на знаки препинания
         text = self._replace_punctuation(text)
+
+        # Убираем лишние пробелы по краям
+        text = text.strip()
+
+        if not text:
+            return text
+
+        # Добавляем буферизованный пробел от предыдущего фрагмента
+        first_char = text[0]
+        if self._pending_space and first_char not in NO_SPACE_BEFORE:
+            text = " " + text
+
+        # Буферизуем пробел для следующего фрагмента
+        self._pending_space = True
 
         # Капитализируем
         text = self._apply_capitalization(text)
@@ -117,6 +132,7 @@ class TextPostProcessor:
     def reset(self) -> None:
         """Сбросить состояние (начать новую диктовку)."""
         self._capitalize_next = True
+        self._pending_space = False
 
 
 # Глобальный экземпляр для использования между вызовами
