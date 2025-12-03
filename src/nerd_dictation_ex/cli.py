@@ -207,12 +207,14 @@ class DictationDaemon:
         """Ввести текст через выбранный метод."""
         from .input import type_text, press_keys
         from .postprocess import process_text, TextAction, KeyAction
+        from .sounds import play_execute
 
         actions = process_text(text)
         for action in actions:
             if isinstance(action, TextAction):
                 type_text(action.text, self.config)
             elif isinstance(action, KeyAction):
+                play_execute()
                 press_keys(action.keys, self.config)
 
     def _dictation_loop(self) -> None:
@@ -252,7 +254,9 @@ class DictationDaemon:
 
         # Сбросить постобработчик для новой диктовки
         from .postprocess import reset_processor
+        from .sounds import play_begin
         reset_processor()
+        play_begin()
 
         self._dictation_thread = threading.Thread(target=self._dictation_loop, daemon=True)
         self._dictation_thread.start()
@@ -263,6 +267,9 @@ class DictationDaemon:
         """Завершить диктовку с выводом текста."""
         if self.state != DaemonState.LISTENING:
             return {"status": "error", "message": "Диктовка не запущена"}
+
+        from .sounds import play_end
+        play_end()
 
         self._stop_dictation.set()
 
@@ -528,6 +535,7 @@ def _cmd_begin_direct(args, config: dict) -> None:
     """Начать диктовку напрямую (без daemon)."""
     from . import get_backend, get_available_backends
     from .input import type_text
+    from .sounds import play_begin, play_end
 
     if COOKIE_PATH.exists():
         print("Диктовка уже запущена. Используйте 'end' или 'cancel'.", file=sys.stderr)
@@ -577,6 +585,7 @@ def _cmd_begin_direct(args, config: dict) -> None:
     signal.signal(signal.SIGINT, handle_signal)
 
     print("Диктовка запущена. Говорите...", file=sys.stderr)
+    play_begin()
 
     try:
         with backend:
@@ -594,6 +603,7 @@ def _cmd_begin_direct(args, config: dict) -> None:
                 if final and final.text:
                     type_text(final.text, config)
     finally:
+        play_end()
         COOKIE_PATH.unlink(missing_ok=True)
         print("\nДиктовка завершена.", file=sys.stderr)
 
