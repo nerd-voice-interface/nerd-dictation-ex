@@ -206,6 +206,8 @@ class DictationDaemon:
     def _type_text(self, text: str) -> None:
         """Ввести текст через выбранный метод."""
         from .input import type_text
+        from .postprocess import process_text
+        text = process_text(text)
         type_text(text, self.config)
 
     def _dictation_loop(self) -> None:
@@ -242,6 +244,10 @@ class DictationDaemon:
 
         self.state = DaemonState.LISTENING
         self._stop_dictation.clear()
+
+        # Сбросить постобработчик для новой диктовки
+        from .postprocess import reset_processor
+        reset_processor()
 
         self._dictation_thread = threading.Thread(target=self._dictation_loop, daemon=True)
         self._dictation_thread.start()
