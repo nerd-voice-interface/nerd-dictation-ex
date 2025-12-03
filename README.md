@@ -137,19 +137,49 @@ systemctl --user enable --now nerd-dictation-ex
 
 ### Привязка к клавишам
 
+#### Вариант 1: Клавиатура (i3/Sway/Hyprland)
+
+Для i3/Sway (`~/.config/i3/config` или `~/.config/sway/config`):
+
+```
+bindsym $mod+Shift+grave exec /path/to/nerd-dictation-ex toggle
+```
+
 Для Hyprland (`~/.config/hypr/hyprland.conf`):
 
 ```
-bind = , F9, exec, nerd-dictation-ex begin &
-bind = , F10, exec, nerd-dictation-ex end
+bind = $mod SHIFT, grave, exec, /path/to/nerd-dictation-ex toggle
 ```
 
-Для Sway:
+#### Вариант 2: Кнопка мыши/тачпада (xbindkeys)
+
+Для привязки к средней кнопке мыши или тачпада:
+
+```bash
+# Установить xbindkeys
+sudo pacman -S xbindkeys  # Arch Linux
+
+# Создать конфиг
+cat > ~/.xbindkeysrc << 'EOF'
+"/path/to/nerd-dictation-ex toggle"
+  b:2
+EOF
+
+# Запустить
+xbindkeys
+```
+
+Добавьте автозапуск в конфиг оконного менеджера:
 
 ```
-bindsym F9 exec nerd-dictation-ex begin &
-bindsym F10 exec nerd-dictation-ex end
+# i3/Sway
+exec --no-startup-id xbindkeys
+
+# Hyprland
+exec-once = xbindkeys
 ```
+
+Коды кнопок: `b:1` — левая, `b:2` — средняя, `b:3` — правая.
 
 ## Создание своего бэкенда
 
