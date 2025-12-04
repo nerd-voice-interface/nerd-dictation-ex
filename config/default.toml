@@ -50,3 +50,21 @@ capitalize = true
 
 # Таймаут тишины для авто-остановки (секунды, 0 = отключено)
 silence_timeout = 0
+
+[noise_reduction]
+# Включить предварительное шумоподавление
+enabled = true
+
+# Метод шумоподавления:
+# - "noisereduce": качественное шумоподавление (требует pip install noisereduce)
+# - "spectral_gating": простой спектральный гейтинг (fallback, не требует зависимостей)
+# - "none": отключено
+method = "noisereduce"
+
+# Время для сбора профиля шума (секунды)
+# В начале диктовки система соберёт профиль фонового шума
+noise_profile_samples = 1.0
+
+# Параметры для spectral_gating (если method = "spectral_gating"):
+# alpha = 0.95        # Коэффициент сглаживания (0-1)
+# threshold = 0.01    # Порог для определения шума

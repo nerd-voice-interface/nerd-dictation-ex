@@ -133,6 +133,10 @@ class DictationDaemon:
         self._wake_word_thread: Optional[threading.Thread] = None
         self._wake_word_running = False
 
+        # Noise reduction
+        from .noise_reduction import create_noise_reducer
+        self._noise_reducer = create_noise_reducer(config)
+
     def load_backend(self, backend_name: str = None) -> None:
         """Загрузить бэкенд и модель в память."""
         from . import get_backend
@@ -377,6 +381,9 @@ class DictationDaemon:
         for chunk in buffered:
             if self._stop_dictation.is_set():
                 return
+            # Применяем шумоподавление если включено
+            if self._noise_reducer:
+                chunk = self._noise_reducer.process_chunk(chunk)
             yield chunk
 
         # Затем читаем живой поток
@@ -384,6 +391,9 @@ class DictationDaemon:
             with self._audio_buffer_lock:
                 if self._audio_buffer:
                     chunk = self._audio_buffer.popleft()
+                    # Применяем шумоподавление если включено
+                    if self._noise_reducer:
+                        chunk = self._noise_reducer.process_chunk(chunk)
                     yield chunk
                     continue
             time.sleep(0.01)
@@ -441,6 +451,9 @@ class DictationDaemon:
         from .postprocess import reset_processor
         from .sounds import play_begin
         reset_processor()
+        # Сбросить фильтр шумоподавления для новой сессии
+        if self._noise_reducer:
+            self._noise_reducer.reset()
         play_begin()
 
         self._dictation_thread = threading.Thread(target=self._dictation_loop, daemon=True)
@@ -698,8 +711,11 @@ def _get_audio_command(config: dict) -> list:
 
 def _audio_stream(config: dict) -> Generator[bytes, None, None]:
     """Генератор аудио-чанков."""
+    from .noise_reduction import create_noise_reducer
+    
     cmd = _get_audio_command(config)
     chunk_size = config.get("audio", {}).get("chunk_size", 8000)
+    noise_reducer = create_noise_reducer(config)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
 
@@ -712,6 +728,9 @@ def _audio_stream(config: dict) -> Generator[bytes, None, None]:
             try:
                 chunk = proc.stdout.read(chunk_size)
                 if chunk:
+                    # Применяем шумоподавление если включено
+                    if noise_reducer:
+                        chunk = noise_reducer.process_chunk(chunk)
                     yield chunk
             except BlockingIOError:
                 time.sleep(0.01)

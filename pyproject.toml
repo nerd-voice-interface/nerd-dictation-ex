@@ -28,15 +28,19 @@ classifiers = [
 
 dependencies = [
     "tomli>=2.0; python_version < '3.11'",
+    "numpy>=1.20.0",  # Для обработки аудио (шумоподавление)
 ]
 
 [project.optional-dependencies]
 # Бэкенды устанавливаются отдельно
 vosk = ["nerd-dictation-vosk"]
 gigaam = ["nerd-dictation-gigaam"]
+# Шумоподавление
+noise-reduction = ["noisereduce>=2.0.0"]
 all = [
     "nerd-dictation-vosk",
     "nerd-dictation-gigaam",
+    "noisereduce>=2.0.0",
 ]
 
 [project.scripts]
