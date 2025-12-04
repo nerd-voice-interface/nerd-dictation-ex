@@ -91,6 +91,10 @@ class DictationDaemon:
     # Размер кольцевого буфера в секундах
     AUDIO_BUFFER_SECONDS = 1.5
 
+    # Wake word настройки
+    WAKE_WORD = "запись"
+    WAKE_WORD_ENABLED = True
+
     def __init__(self, config: dict):
         self.config = config
         self.state = DaemonState.IDLE
@@ -111,6 +115,23 @@ class DictationDaemon:
         self._audio_buffer: deque = deque(maxlen=self._buffer_max_chunks)
         self._audio_buffer_lock = threading.Lock()
         self._audio_listener_thread: Optional[threading.Thread] = None
+
+        # Очередь для wake word (без лимита, wake word loop потребляет данные)
+        from queue import Queue
+        self._wake_word_queue: Queue = Queue()
+
+        # Wake word detection
+        self._wake_word_enabled = config.get("wake_word", {}).get("enabled", self.WAKE_WORD_ENABLED)
+        self._wake_word = config.get("wake_word", {}).get("word", self.WAKE_WORD)
+        self._wake_word_model_path = os.path.expanduser(
+            config.get("wake_word", {}).get("model_path", "~/.local/share/vosk/vosk-model-small-ru")
+        )
+        self._vosk_model = None
+        self._vosk_recognizer = None
+        self._vad_model = None
+        self._vad_iterator = None
+        self._wake_word_thread: Optional[threading.Thread] = None
+        self._wake_word_running = False
 
     def load_backend(self, backend_name: str = None) -> None:
         """Загрузить бэкенд и модель в память."""
@@ -142,6 +163,164 @@ class DictationDaemon:
 
         print(f"Бэкенд {backend_name} загружен и готов", file=sys.stderr)
 
+    def _load_wake_word_models(self) -> bool:
+        """Загрузить модели для wake word detection (Silero VAD + Vosk small)."""
+        if not self._wake_word_enabled:
+            return False
+
+        # Загрузить Silero VAD
+        try:
+            import torch
+            print("Загрузка Silero VAD для wake word...", file=sys.stderr)
+            self._vad_model, utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                onnx=False,
+                trust_repo=True
+            )
+            (_, _, _, VADIterator, _) = utils
+            sample_rate = self.config.get("audio", {}).get("sample_rate", 16000)
+            self._vad_iterator = VADIterator(
+                self._vad_model,
+                sampling_rate=sample_rate,
+                threshold=0.5,
+                min_silence_duration_ms=300,
+                speech_pad_ms=100
+            )
+            print("Silero VAD загружен", file=sys.stderr)
+        except Exception as e:
+            print(f"Ошибка загрузки Silero VAD: {e}", file=sys.stderr)
+            return False
+
+        # Загрузить Vosk small для wake word
+        try:
+            from vosk import Model, KaldiRecognizer
+            print(f"Загрузка Vosk модели для wake word: {self._wake_word_model_path}...", file=sys.stderr)
+
+            if not os.path.exists(self._wake_word_model_path):
+                print(f"Модель не найдена: {self._wake_word_model_path}", file=sys.stderr)
+                print("Скачайте: https://alphacephei.com/vosk/models", file=sys.stderr)
+                return False
+
+            self._vosk_model = Model(self._wake_word_model_path)
+            sample_rate = self.config.get("audio", {}).get("sample_rate", 16000)
+            self._vosk_recognizer = KaldiRecognizer(self._vosk_model, sample_rate)
+            print("Vosk модель для wake word загружена", file=sys.stderr)
+            return True
+        except Exception as e:
+            print(f"Ошибка загрузки Vosk модели: {e}", file=sys.stderr)
+            return False
+
+    def _start_wake_word_detection(self) -> None:
+        """Запустить поток wake word detection."""
+        if not self._wake_word_enabled:
+            return
+
+        if self._wake_word_thread and self._wake_word_thread.is_alive():
+            return
+
+        if not self._load_wake_word_models():
+            print("Wake word detection отключён из-за ошибок загрузки", file=sys.stderr)
+            return
+
+        self._wake_word_running = True
+        self._wake_word_thread = threading.Thread(
+            target=self._wake_word_loop, daemon=True
+        )
+        self._wake_word_thread.start()
+        print(f"Wake word detection запущен (слово: '{self._wake_word}')", file=sys.stderr)
+
+    def _wake_word_loop(self) -> None:
+        """Цикл распознавания wake word."""
+        import torch
+        import numpy as np
+        from queue import Empty
+
+        sample_rate = self.config.get("audio", {}).get("sample_rate", 16000)
+
+        # VAD требует чанки по 512 сэмплов при 16kHz
+        vad_chunk_samples = 512
+        vad_buffer = np.array([], dtype=np.int16)
+
+        # Буфер для накопления речи перед отправкой в Vosk
+        speech_buffer = b''
+        is_speech_active = False
+
+        while self._wake_word_running and self._running:
+            # Пропускаем, если диктовка уже активна
+            if self.state == DaemonState.LISTENING:
+                # Сбросить состояние и очистить очередь
+                vad_buffer = np.array([], dtype=np.int16)
+                speech_buffer = b''
+                is_speech_active = False
+                # Очистить очередь
+                while not self._wake_word_queue.empty():
+                    try:
+                        self._wake_word_queue.get_nowait()
+                    except Empty:
+                        break
+                if self._vad_iterator:
+                    self._vad_iterator.reset_states()
+                if self._vosk_recognizer:
+                    self._vosk_recognizer.Reset()
+                time.sleep(0.1)
+                continue
+
+            # Получить аудио из очереди (блокирующий вызов с таймаутом)
+            try:
+                chunk = self._wake_word_queue.get(timeout=0.1)
+            except Empty:
+                continue
+
+            # Конвертировать в numpy
+            audio_np = np.frombuffer(chunk, dtype=np.int16)
+            vad_buffer = np.concatenate([vad_buffer, audio_np])
+
+            # Обрабатываем VAD чанками по 512 сэмплов
+            while len(vad_buffer) >= vad_chunk_samples:
+                vad_chunk = vad_buffer[:vad_chunk_samples]
+                vad_buffer = vad_buffer[vad_chunk_samples:]
+
+                # Нормализация для VAD
+                audio_float = torch.from_numpy(vad_chunk.astype(np.float32) / 32768.0)
+
+                # Проверяем VAD
+                speech_dict = self._vad_iterator(audio_float, return_seconds=False)
+
+                if speech_dict:
+                    if 'start' in speech_dict:
+                        is_speech_active = True
+                        speech_buffer = vad_chunk.tobytes()
+                    elif 'end' in speech_dict:
+                        is_speech_active = False
+                        speech_buffer += vad_chunk.tobytes()
+
+                        # Распознаём накопленную речь
+                        if speech_buffer:
+                            self._vosk_recognizer.AcceptWaveform(speech_buffer)
+                            result = json.loads(self._vosk_recognizer.Result())
+                            text = result.get("text", "").lower().strip()
+
+                            if text:
+                                print(f"[wake word] распознано: '{text}'", file=sys.stderr)
+
+                                # Проверяем на wake word (включая падежные формы)
+                                wake_words = [self._wake_word.lower(), "записи"]
+                                if any(w in text for w in wake_words):
+                                    print(f"[wake word] активация по слову '{self._wake_word}'!", file=sys.stderr)
+                                    self._vad_iterator.reset_states()
+                                    self._vosk_recognizer.Reset()
+                                    # Очистить аудио-буфер чтобы wake word не попал в диктовку
+                                    with self._audio_buffer_lock:
+                                        self._audio_buffer.clear()
+                                    self.begin_dictation()
+
+                        speech_buffer = b''
+                        self._vosk_recognizer.Reset()
+                elif is_speech_active:
+                    speech_buffer += vad_chunk.tobytes()
+
     def _start_audio_listener(self) -> None:
         """Запустить постоянный слушатель аудио."""
         if self._audio_listener_thread and self._audio_listener_thread.is_alive():
@@ -168,6 +347,12 @@ class DictationDaemon:
                     if chunk:
                         with self._audio_buffer_lock:
                             self._audio_buffer.append(chunk)
+                        # Дублируем в очередь для wake word
+                        if self._wake_word_running and self.state != DaemonState.LISTENING:
+                            try:
+                                self._wake_word_queue.put_nowait(chunk)
+                            except:
+                                pass  # Очередь переполнена - пропускаем
                     elif not chunk:
                         # EOF или процесс завершился
                         break
@@ -339,6 +524,7 @@ class DictationDaemon:
     def _shutdown(self) -> dict:
         """Остановить daemon."""
         self._running = False
+        self._wake_word_running = False
         return {"status": "ok", "message": "Daemon останавливается"}
 
     def run(self) -> None:
@@ -355,6 +541,9 @@ class DictationDaemon:
 
         # Запустить постоянный аудио-слушатель
         self._start_audio_listener()
+
+        # Запустить wake word detection если включено
+        self._start_wake_word_detection()
 
         print(f"Daemon запущен, socket: {SOCKET_PATH}", file=sys.stderr)
 
