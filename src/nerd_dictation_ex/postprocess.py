@@ -29,8 +29,10 @@ Action = Union[TextAction, KeyAction]
 
 # Слова → нажатия клавиш (обрабатываются до замены пунктуации)
 KEY_MAP = {
+    "выполнить": "ctrl+Return",
     "выполнять": "ctrl+Return",
     "выполняй": "ctrl+Return",
+    "выполни": "ctrl+Return",
 }
 
 # Слова → знаки препинания
