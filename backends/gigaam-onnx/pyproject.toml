@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nerd-dictation-gigaam-onnx"
+version = "0.1.0"
+description = "GigaAM ONNX бэкенд для nerd-dictation-ex (GPU через ONNX Runtime)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0"}
+keywords = ["speech-to-text", "gigaam", "onnx", "asr", "russian", "nerd-dictation", "gpu"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+dependencies = [
+    "nerd-dictation-ex>=0.1.0",
+    "onnx-asr>=0.9.0",
+    "huggingface_hub>=0.20.0",
+    "torch>=2.0",
+]
+
+[project.entry-points."nerd_dictation_ex.backends"]
+gigaam-onnx = "nerd_dictation_gigaam_onnx:GigaAMOnnxBackend"
+
+[project.urls]
+Homepage = "https://github.com/marcusmae/nerd-dictation-ex"
+"GigaAM" = "https://github.com/salute-developers/GigaAM"
+"onnx-asr" = "https://github.com/istupakov/onnx-asr"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"nerd_dictation_gigaam_onnx" = ["*.md"]
