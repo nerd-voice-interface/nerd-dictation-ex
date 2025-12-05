@@ -1,0 +1,98 @@
+From e2c7ce99f8a59d6c0d897d08ba695be7d5b96333 Mon Sep 17 00:00:00 2001
+From: Dmitry Mikushin <dmitry@kernelgen.org>
+Date: Thu, 4 Dec 2025 12:45:05 +0100
+Subject: [PATCH 3/3] Fix audio device reconnection on microphone change
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Use non-blocking I/O with select() and timeout detection to handle
+microphone disconnection/reconnection. When no audio data is received
+for ~2.5s, pw-cat is automatically restarted to pick up the new
+default device.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/nerd_dictation_ex/cli.py | 45 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 40 insertions(+), 5 deletions(-)
+
+diff --git a/src/nerd_dictation_ex/cli.py b/src/nerd_dictation_ex/cli.py
+index e883ed5..f828b11 100644
+--- a/src/nerd_dictation_ex/cli.py
++++ b/src/nerd_dictation_ex/cli.py
+@@ -338,21 +338,54 @@ class DictationDaemon:
+ 
+     def _audio_listener_loop(self) -> None:
+         """Постоянно слушать микрофон и заполнять кольцевой буфер."""
++        import select
++
+         cmd = _get_audio_command(self.config)
+         chunk_size = self.config.get("audio", {}).get("chunk_size", 8000)
++        sample_rate = self.config.get("audio", {}).get("sample_rate", 16000)
+         restart_delay = 0.1  # Начальная задержка перед перезапуском
+         max_restart_delay = 5.0  # Максимальная задержка
+ 
++        # Таймаут: сколько секунд ждать данных (chunk_size байт при sample_rate)
++        # Добавляем запас x3 на случай буферизации
++        bytes_per_second = sample_rate * 2  # 16-bit audio
++        read_timeout = (chunk_size / bytes_per_second) * 3 + 1.0
++
+         while self._running:
+             try:
+                 self._audio_proc = subprocess.Popen(
+                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                 )
+ 
+-                # Блокирующее чтение — ждём пока накопится chunk_size байт
++                # Делаем stdout неблокирующим
++                fd = self._audio_proc.stdout.fileno()
++                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
++                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
++
++                audio_buffer = b''
++                last_data_time = time.time()
++
+                 while self._running and self._audio_proc.poll() is None:
+-                    chunk = self._audio_proc.stdout.read(chunk_size)
+-                    if chunk:
++                    # Ждём данных с таймаутом
++                    ready, _, _ = select.select([self._audio_proc.stdout], [], [], 0.1)
++
++                    if ready:
++                        try:
++                            data = self._audio_proc.stdout.read(chunk_size)
++                            if data:
++                                audio_buffer += data
++                                last_data_time = time.time()
++                            elif data == b'':
++                                # EOF
++                                break
++                        except BlockingIOError:
++                            pass
++
++                    # Отправляем полные чанки
++                    while len(audio_buffer) >= chunk_size:
++                        chunk = audio_buffer[:chunk_size]
++                        audio_buffer = audio_buffer[chunk_size:]
++
+                         with self._audio_buffer_lock:
+                             self._audio_buffer.append(chunk)
+                         # Дублируем в очередь для wake word
+@@ -363,8 +396,10 @@ class DictationDaemon:
+                                 pass  # Очередь переполнена - пропускаем
+                         # Сброс задержки при успешном чтении
+                         restart_delay = 0.1
+-                    elif not chunk:
+-                        # EOF или процесс завершился
++
++                    # Проверяем таймаут отсутствия данных
++                    if time.time() - last_data_time > read_timeout:
++                        print(f"[audio] Нет данных {read_timeout:.1f}с, перезапуск...", file=sys.stderr)
+                         break
+ 
+                 # Проверяем код возврата процесса
+-- 
+2.52.0
+
